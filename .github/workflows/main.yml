@@ -55,16 +55,13 @@ jobs:
       - name: Build extension
         run: npm run build
         
-      - name: Clone extension-manifest-converter
-        run: |
-          git clone https://github.com/GoogleChromeLabs/extension-manifest-converter.git
-          
       - name: Extract and modify built extension
         run: |
-          # Find the built zip file
-          ZIPFILE=$(find . -name "*.zip" -type f | head -n 1)
+          # Find the built zip file (exclude any test or node_modules directories)
+          ZIPFILE=$(find . -name "*.zip" -type f -not -path "*/node_modules/*" -not -path "*/tests/*" -not -path "*/test/*" | head -n 1)
           
           if [ -n "$ZIPFILE" ]; then
+            echo "Found zip file: $ZIPFILE"
             EXTRACT_PATH="build-output"
             mkdir -p "$EXTRACT_PATH"
             unzip -q "$ZIPFILE" -d "$EXTRACT_PATH"
@@ -90,6 +87,10 @@ jobs:
             echo "Error: No zip file found after build"
             exit 1
           fi
+          
+      - name: Clone extension-manifest-converter
+        run: |
+          git clone https://github.com/GoogleChromeLabs/extension-manifest-converter.git
           
       - name: Convert manifest to V3
         run: |
