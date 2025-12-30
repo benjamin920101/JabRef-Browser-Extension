@@ -1,0 +1,117 @@
+name: Build and Release JabRef Browser Extension
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          
+      - name: Install global dependencies
+        run: |
+          npm install --global gulp-cli web-ext
+          
+      - name: Clone zotero-connectors
+        run: |
+          if (Test-Path zotero-connectors) { Remove-Item -Recurse -Force zotero-connectors }
+          git clone --recursive https://github.com/zotero/zotero-connectors.git
+          
+      - name: Install zotero-connectors dependencies
+        run: |
+          cd zotero-connectors
+          npm install
+          cd ..
+          
+      - name: Update canvas version in package.json
+        run: |
+          $packageJson = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($packageJson.dependencies.canvas) {
+            $packageJson.dependencies.canvas = "^3.1.2"
+          }
+          if ($packageJson.devDependencies.canvas) {
+            $packageJson.devDependencies.canvas = "^3.1.2"
+          }
+          $packageJson | ConvertTo-Json -Depth 100 | Set-Content package.json
+          
+      - name: Install dependencies
+        run: npm install
+        
+      - name: Build extension
+        run: npm run build
+        
+      - name: Extract and modify built extension
+        run: |
+          # Find the built zip file
+          $zipFile = Get-ChildItem -Path . -Filter "*.zip" -Recurse | Select-Object -First 1
+          
+          if ($zipFile) {
+            $extractPath = "build-output"
+            Expand-Archive -Path $zipFile.FullName -DestinationPath $extractPath -Force
+            
+            # Remove developer key from manifest.json
+            $manifestPath = Join-Path $extractPath "manifest.json"
+            if (Test-Path $manifestPath) {
+              $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+              $manifest.PSObject.Properties.Remove('developer')
+              $manifest | ConvertTo-Json -Depth 100 | Set-Content $manifestPath
+            }
+            
+            # Modify external-scripts/zotero.js (lines 376-381)
+            $zoteroJsPath = Join-Path $extractPath "external-scripts/zotero.js"
+            if (Test-Path $zoteroJsPath) {
+              $content = Get-Content $zoteroJsPath -Raw
+              # Remove specific if-else block (approximate pattern matching)
+              # This is a placeholder - you may need to adjust the regex pattern
+              $content = $content -replace '(?s)if\s*\([^)]+\)\s*\{[^}]+\}\s*else\s*\{[^}]+\}', '', 1
+              $content | Set-Content $zoteroJsPath -NoNewline
+            }
+            
+            # Create final zip
+            $finalZip = "jabref-browser-extension.zip"
+            Compress-Archive -Path "$extractPath\*" -DestinationPath $finalZip -Force
+            
+            echo "RELEASE_FILE=$finalZip" >> $env:GITHUB_ENV
+          }
+          
+      - name: Get version
+        id: get_version
+        run: |
+          if ($env:GITHUB_REF -match 'refs/tags/(.*)') {
+            $version = $matches[1]
+          } else {
+            $version = "v$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+          }
+          echo "VERSION=$version" >> $env:GITHUB_ENV
+          
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
+          draft: false
+          prerelease: false
+          files: jabref-browser-extension.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jabref-browser-extension
+          path: jabref-browser-extension.zip
