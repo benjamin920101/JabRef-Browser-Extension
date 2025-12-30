@@ -23,6 +23,11 @@ jobs:
         with:
           node-version: '18'
           
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+          
       - name: Install global dependencies
         run: |
           npm install --global gulp-cli web-ext
@@ -50,6 +55,10 @@ jobs:
       - name: Build extension
         run: npm run build
         
+      - name: Clone extension-manifest-converter
+        run: |
+          git clone https://github.com/GoogleChromeLabs/extension-manifest-converter.git
+          
       - name: Extract and modify built extension
         run: |
           # Find the built zip file
@@ -73,22 +82,40 @@ jobs:
               cp "$ZOTERO_JS" "$ZOTERO_JS.bak"
               
               # Remove specific if-else block around lines 376-381
-              # This uses sed to remove the problematic block
-              # Adjust the pattern as needed for your specific case
               sed -i '376,381d' "$ZOTERO_JS" 2>/dev/null || true
             fi
             
-            # Create final zip
-            FINAL_ZIP="jabref-browser-extension.zip"
-            cd "$EXTRACT_PATH"
-            zip -r "../$FINAL_ZIP" . -q
-            cd ..
-            
-            echo "RELEASE_FILE=$FINAL_ZIP" >> $GITHUB_ENV
+            echo "EXTRACT_PATH=$EXTRACT_PATH" >> $GITHUB_ENV
           else
             echo "Error: No zip file found after build"
             exit 1
           fi
+          
+      - name: Convert manifest to V3
+        run: |
+          cd extension-manifest-converter
+          python3 emc.py "../$EXTRACT_PATH"
+          cd ..
+          
+          # The converter creates a new directory with -mv3 suffix
+          if [ -d "${EXTRACT_PATH}-mv3" ]; then
+            # Replace the original with the converted version
+            rm -rf "$EXTRACT_PATH"
+            mv "${EXTRACT_PATH}-mv3" "$EXTRACT_PATH"
+            echo "Manifest successfully converted to V3"
+          else
+            echo "Warning: Manifest V3 conversion may not have created expected output"
+          fi
+          
+      - name: Create final release package
+        run: |
+          # Create final zip
+          FINAL_ZIP="jabref-browser-extension.zip"
+          cd "$EXTRACT_PATH"
+          zip -r "../$FINAL_ZIP" . -q
+          cd ..
+          
+          echo "RELEASE_FILE=$FINAL_ZIP" >> $GITHUB_ENV
           
       - name: Get version
         id: get_version
