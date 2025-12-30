@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     
     steps:
       - name: Checkout repository
@@ -27,9 +27,9 @@ jobs:
         run: |
           npm install --global gulp-cli web-ext
           
-      - name: Clone zotero-connectors
+      - name: Remove and clone zotero-connectors
         run: |
-          if (Test-Path zotero-connectors) { Remove-Item -Recurse -Force zotero-connectors }
+          rm -rf zotero-connectors
           git clone --recursive https://github.com/zotero/zotero-connectors.git
           
       - name: Install zotero-connectors dependencies
@@ -40,14 +40,9 @@ jobs:
           
       - name: Update canvas version in package.json
         run: |
-          $packageJson = Get-Content package.json -Raw | ConvertFrom-Json
-          if ($packageJson.dependencies.canvas) {
-            $packageJson.dependencies.canvas = "^3.1.2"
-          }
-          if ($packageJson.devDependencies.canvas) {
-            $packageJson.devDependencies.canvas = "^3.1.2"
-          }
-          $packageJson | ConvertTo-Json -Depth 100 | Set-Content package.json
+          if [ -f package.json ]; then
+            sed -i 's/"canvas":\s*"[^"]*"/"canvas": "^3.1.2"/g' package.json
+          fi
           
       - name: Install dependencies
         run: npm install
@@ -58,49 +53,56 @@ jobs:
       - name: Extract and modify built extension
         run: |
           # Find the built zip file
-          $zipFile = Get-ChildItem -Path . -Filter "*.zip" -Recurse | Select-Object -First 1
+          ZIPFILE=$(find . -name "*.zip" -type f | head -n 1)
           
-          if ($zipFile) {
-            $extractPath = "build-output"
-            Expand-Archive -Path $zipFile.FullName -DestinationPath $extractPath -Force
+          if [ -n "$ZIPFILE" ]; then
+            EXTRACT_PATH="build-output"
+            mkdir -p "$EXTRACT_PATH"
+            unzip -q "$ZIPFILE" -d "$EXTRACT_PATH"
             
             # Remove developer key from manifest.json
-            $manifestPath = Join-Path $extractPath "manifest.json"
-            if (Test-Path $manifestPath) {
-              $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-              $manifest.PSObject.Properties.Remove('developer')
-              $manifest | ConvertTo-Json -Depth 100 | Set-Content $manifestPath
-            }
+            MANIFEST="$EXTRACT_PATH/manifest.json"
+            if [ -f "$MANIFEST" ]; then
+              jq 'del(.developer)' "$MANIFEST" > "$MANIFEST.tmp" && mv "$MANIFEST.tmp" "$MANIFEST"
+            fi
             
-            # Modify external-scripts/zotero.js (lines 376-381)
-            $zoteroJsPath = Join-Path $extractPath "external-scripts/zotero.js"
-            if (Test-Path $zoteroJsPath) {
-              $content = Get-Content $zoteroJsPath -Raw
-              # Remove specific if-else block (approximate pattern matching)
-              # This is a placeholder - you may need to adjust the regex pattern
-              $content = $content -replace '(?s)if\s*\([^)]+\)\s*\{[^}]+\}\s*else\s*\{[^}]+\}', '', 1
-              $content | Set-Content $zoteroJsPath -NoNewline
-            }
+            # Modify external-scripts/zotero.js (remove lines 376-381 if-else block)
+            ZOTERO_JS="$EXTRACT_PATH/external-scripts/zotero.js"
+            if [ -f "$ZOTERO_JS" ]; then
+              # Backup original file
+              cp "$ZOTERO_JS" "$ZOTERO_JS.bak"
+              
+              # Remove specific if-else block around lines 376-381
+              # This uses sed to remove the problematic block
+              # Adjust the pattern as needed for your specific case
+              sed -i '376,381d' "$ZOTERO_JS" 2>/dev/null || true
+            fi
             
             # Create final zip
-            $finalZip = "jabref-browser-extension.zip"
-            Compress-Archive -Path "$extractPath\*" -DestinationPath $finalZip -Force
+            FINAL_ZIP="jabref-browser-extension.zip"
+            cd "$EXTRACT_PATH"
+            zip -r "../$FINAL_ZIP" . -q
+            cd ..
             
-            echo "RELEASE_FILE=$finalZip" >> $env:GITHUB_ENV
-          }
+            echo "RELEASE_FILE=$FINAL_ZIP" >> $GITHUB_ENV
+          else
+            echo "Error: No zip file found after build"
+            exit 1
+          fi
           
       - name: Get version
         id: get_version
         run: |
-          if ($env:GITHUB_REF -match 'refs/tags/(.*)') {
-            $version = $matches[1]
-          } else {
-            $version = "v$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-          }
-          echo "VERSION=$version" >> $env:GITHUB_ENV
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="v$(date +%Y%m%d-%H%M%S)"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
           
       - name: Create Release
         uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
           tag_name: ${{ env.VERSION }}
           name: Release ${{ env.VERSION }}
@@ -115,3 +117,4 @@ jobs:
         with:
           name: jabref-browser-extension
           path: jabref-browser-extension.zip
+          retention-days: 30
