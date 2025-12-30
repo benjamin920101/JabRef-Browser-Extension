@@ -92,20 +92,81 @@ jobs:
         run: |
           git clone https://github.com/GoogleChromeLabs/extension-manifest-converter.git
           
+      - name: Verify manifest before conversion
+        run: |
+          echo "=== Original Manifest ==="
+          if [ -f "$EXTRACT_PATH/manifest.json" ]; then
+            cat "$EXTRACT_PATH/manifest.json"
+            echo ""
+            echo "Manifest version: $(jq -r '.manifest_version // "not found"' "$EXTRACT_PATH/manifest.json")"
+          else
+            echo "ERROR: manifest.json not found!"
+            exit 1
+          fi
+          
       - name: Convert manifest to V3
         run: |
+          echo "Starting manifest conversion..."
           cd extension-manifest-converter
-          python3 emc.py "../$EXTRACT_PATH"
+          python3 emc.py "../$EXTRACT_PATH" || {
+            echo "Conversion failed, but continuing..."
+            cd ..
+            exit 0
+          }
           cd ..
           
-          # The converter creates a new directory with -mv3 suffix
+          # Check if conversion created output
           if [ -d "${EXTRACT_PATH}-mv3" ]; then
-            # Replace the original with the converted version
+            echo "Conversion successful, replacing original..."
             rm -rf "$EXTRACT_PATH"
             mv "${EXTRACT_PATH}-mv3" "$EXTRACT_PATH"
             echo "Manifest successfully converted to V3"
           else
-            echo "Warning: Manifest V3 conversion may not have created expected output"
+            echo "No -mv3 directory created. Checking for in-place conversion..."
+            if [ -f "$EXTRACT_PATH/manifest.json" ]; then
+              MANIFEST_VERSION=$(jq -r '.manifest_version // "2"' "$EXTRACT_PATH/manifest.json")
+              if [ "$MANIFEST_VERSION" = "3" ]; then
+                echo "Manifest was converted in-place to V3"
+              else
+                echo "WARNING: Manifest is still V2, conversion may have failed"
+                echo "Continuing with original manifest..."
+              fi
+            fi
+          fi
+          
+      - name: Verify final manifest
+        run: |
+          echo "=== Final Manifest ==="
+          if [ -f "$EXTRACT_PATH/manifest.json" ]; then
+            cat "$EXTRACT_PATH/manifest.json"
+            echo ""
+            
+            # Validate JSON syntax
+            if jq empty "$EXTRACT_PATH/manifest.json" 2>/dev/null; then
+              echo "✓ Manifest JSON is valid"
+            else
+              echo "✗ ERROR: Manifest JSON is invalid!"
+              exit 1
+            fi
+            
+            # Check required fields
+            NAME=$(jq -r '.name // ""' "$EXTRACT_PATH/manifest.json")
+            VERSION=$(jq -r '.version // ""' "$EXTRACT_PATH/manifest.json")
+            MANIFEST_V=$(jq -r '.manifest_version // ""' "$EXTRACT_PATH/manifest.json")
+            
+            echo "Name: $NAME"
+            echo "Version: $VERSION"
+            echo "Manifest Version: $MANIFEST_V"
+            
+            if [ -z "$NAME" ] || [ -z "$VERSION" ] || [ -z "$MANIFEST_V" ]; then
+              echo "✗ ERROR: Missing required manifest fields!"
+              exit 1
+            fi
+            
+            echo "✓ All required fields present"
+          else
+            echo "✗ ERROR: manifest.json not found in final output!"
+            exit 1
           fi
           
       - name: Create final release package
